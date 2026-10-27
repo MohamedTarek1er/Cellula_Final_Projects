@@ -1,0 +1,8 @@
+Python is a high-level programming language.
+
+LangChain helps developers build applications
+using large language models.
+
+Retrieval-Augmented Generation (RAG) retrieves
+relevant information from a knowledge base
+before generating an answer.
