@@ -2,6 +2,8 @@ import logging
 
 from agents.evaluator import evaluate_answer
 from agents.generator import generate_answer, retrieve_context
+from memory.evaluator_memory import evaluator_memory
+from memory.generator_memory import generator_memory
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +48,45 @@ def _result(
     }
 
 
-def run_feedback_loop(question: str, top_k: int = 4) -> dict:
+def _finish(session_id: str, question: str, result: dict) -> dict:
+    """
+    Close the question: write the finished turn into each agent's OWN memory,
+    then return the result. Technical errors are not remembered.
+    """
+    status = result["status"]
+
+    if status != "error":
+        generator_memory.add_turn(
+            session_id,
+            question,
+            result["answer"],
+            result["sources"],
+            result["validated"],
+        )
+
+    if status in ("accepted", "max_iterations"):
+        evaluator_memory.add_turn_summary(
+            session_id,
+            question,
+            result["decision"],
+            result["iterations"],
+        )
+
+    return result
+
+
+def clear_session_memory(session_id: str) -> None:
+    """Wipe both memories of one session (for the 'clear history' button)."""
+    generator_memory.clear(session_id)
+    evaluator_memory.clear(session_id)
+
+
+def run_feedback_loop(
+    question: str,
+    top_k: int = 4,
+    session_id: str = "default",
+) -> dict:
+    session_id = (session_id or "").strip() or "default"
     history = []
 
     # Step 1: search the knowledge base ONCE (the question never changes).
@@ -59,49 +99,67 @@ def run_feedback_loop(question: str, top_k: int = 4) -> dict:
         return _result(ERROR_MESSAGE, "error", False, 0, [], history)
 
     sources = retrieval["sources"]
+    context = retrieval["context"]
 
     # Nothing found: an honest "I don't know", not a failed answer.
-    if not retrieval["context"].strip():
+    if not context.strip():
         logger.info("No knowledge found; skipping the evaluation loop.")
-        return _result(NO_KNOWLEDGE_MESSAGE, "no_knowledge", False, 0, [], history)
+        result = _result(NO_KNOWLEDGE_MESSAGE, "no_knowledge", False, 0, [], history)
+        return _finish(session_id, question, result)
 
-    context = retrieval["context"]
+    # Step 2: open a fresh page in each agent's own notebook.
+    generator_memory.start_question(session_id, context)
+    evaluator_memory.start_question(session_id)
+
     answer = ""
     feedback = ""
 
-    # Step 2: generate -> evaluate, at most MAX_ITERATIONS times.
+    # Step 3: generate -> evaluate, at most MAX_ITERATIONS times.
     for attempt in range(1, MAX_ITERATIONS + 1):
-        logger.info("Attempt %s/%s", attempt, MAX_ITERATIONS)
+        logger.info("Attempt %s/%s (session=%s)", attempt, MAX_ITERATIONS, session_id)
 
-        # Generator gets: question, context, its own previous answer, feedback.
+        # Generator reads ONLY its own memory.
         try:
             generated = generate_answer(
                 question=question,
                 top_k=top_k,
                 feedback=feedback,
-                previous_answer=answer,
                 retrieval=retrieval,
+                conversation_history=generator_memory.format_conversation(session_id),
+                attempt_history=generator_memory.format_attempts(session_id),
             )
         except Exception:
             logger.exception("Generator failed on attempt %s.", attempt)
             # Keep the last good answer if we have one.
-            return _result(
+            result = _result(
                 answer or ERROR_MESSAGE,
                 "error",
                 False,
                 attempt,
                 sources,
                 history,
-                disclaimer="Note: a technical error stopped the process." if answer else "",
+                disclaimer="Note: a technical error stopped the process."
+                if answer
+                else "",
             )
+            return _finish(session_id, question, result)
 
         answer = generated["answer"]
 
-        # Evaluator gets: question, context, the new answer. Nothing else.
+        # Generator writes to its own memory (answer + the feedback that led to it).
+        generator_memory.add_attempt(
+            session_id,
+            attempt,
+            answer,
+            feedback_received=feedback,
+        )
+
+        # Evaluator reads ONLY its own memory plus question, context, new answer.
         evaluation = evaluate_answer(
             question=question,
             answer=answer,
             context=context,
+            feedback_history=evaluator_memory.format_feedback_history(session_id),
         )
 
         # Technical failure of the evaluator (not a real rejection).
@@ -114,7 +172,7 @@ def run_feedback_loop(question: str, top_k: int = 4) -> dict:
                     "feedback": "",
                 }
             )
-            return _result(
+            result = _result(
                 answer,
                 "evaluation_failed",
                 False,
@@ -123,9 +181,18 @@ def run_feedback_loop(question: str, top_k: int = 4) -> dict:
                 history,
                 EVALUATION_FAILED_DISCLAIMER,
             )
+            return _finish(session_id, question, result)
 
         decision = evaluation["decision"]
         evaluator_feedback = evaluation["feedback"]
+
+        # Evaluator writes to its own memory.
+        evaluator_memory.add_evaluation(
+            session_id,
+            attempt,
+            decision,
+            evaluator_feedback,
+        )
 
         history.append(
             {
@@ -136,17 +203,18 @@ def run_feedback_loop(question: str, top_k: int = 4) -> dict:
             }
         )
 
-        # Step 3a: accepted -> exit and return.
+        # Step 4a: accepted -> exit and return.
         if decision == "accept":
             logger.info("Answer accepted on attempt %s.", attempt)
-            return _result(answer, "accepted", True, attempt, sources, history)
+            result = _result(answer, "accepted", True, attempt, sources, history)
+            return _finish(session_id, question, result)
 
-        # Step 3b: rejected -> the feedback goes back to the Generator.
+        # Step 4b: rejected -> the feedback goes back to the Generator.
         feedback = evaluator_feedback
 
-    # Step 4: out of attempts -> return the latest answer with a disclaimer.
+    # Step 5: out of attempts -> return the latest answer with a disclaimer.
     logger.warning("Max iterations reached without acceptance.")
-    return _result(
+    result = _result(
         answer,
         "max_iterations",
         False,
@@ -155,3 +223,4 @@ def run_feedback_loop(question: str, top_k: int = 4) -> dict:
         history,
         UNVALIDATED_DISCLAIMER,
     )
+    return _finish(session_id, question, result)
