@@ -1,6 +1,12 @@
-from langchain_core.messages import HumanMessage, SystemMessage
+import logging
+
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.prompts import ChatPromptTemplate
+
 from knowledge_base.vector_store import search_documents
 from llm import llm
+
+logger = logging.getLogger(__name__)
 
 GENERATOR_SYSTEM_PROMPT = """
 You are the Generator component of an AI Knowledge Assistant.
@@ -18,6 +24,34 @@ Rules:
 
 Return a clear, readable answer.
 """
+
+GENERATOR_HUMAN_PROMPT = """
+User Question:
+{question}
+
+Retrieved Knowledge:
+{context}
+
+Previous Answer:
+{previous_answer}
+
+Evaluator Feedback:
+{feedback}
+
+Generate an accurate answer using the retrieved knowledge.
+If a previous answer and feedback are provided, revise the previous answer
+so that it addresses the feedback. Do not repeat its mistakes.
+"""
+
+# LCEL chain: prompt -> LLM -> plain string
+generator_prompt = ChatPromptTemplate.from_messages(
+    [
+        ("system", GENERATOR_SYSTEM_PROMPT),
+        ("human", GENERATOR_HUMAN_PROMPT),
+    ]
+)
+generator_chain = generator_prompt | llm | StrOutputParser()
+
 
 def format_context(documents) -> str:
     context_parts = []
@@ -38,12 +72,9 @@ def format_context(documents) -> str:
 
     return "\n\n".join(context_parts)
 
-def generate_answer(
-    question: str,
-    top_k: int = 4,
-    feedback: str = "",
-) -> dict:
 
+def retrieve_context(question: str, top_k: int = 4) -> dict:
+    """Search the knowledge base once and package the results."""
     question = question.strip()
     if not question:
         raise ValueError("Question cannot be empty.")
@@ -51,6 +82,48 @@ def generate_answer(
     documents = search_documents(query=question, k=top_k)
 
     if not documents:
+        logger.info("No documents retrieved for the question.")
+        return {"context": "", "sources": [], "retrieved_documents": 0}
+
+    sources = list(
+        dict.fromkeys(
+            document.metadata.get("source", "Unknown")
+            for document in documents
+        )
+    )
+
+    return {
+        "context": format_context(documents),
+        "sources": sources,
+        "retrieved_documents": len(documents),
+    }
+
+
+def generate_answer(
+    question: str,
+    top_k: int = 4,
+    feedback: str = "",
+    previous_answer: str = "",
+    retrieval: dict | None = None,
+) -> dict:
+    """
+    Generate an answer from retrieved context.
+
+    If `retrieval` (the output of retrieve_context) is given, no new search
+    is performed. Otherwise the knowledge base is searched here.
+    """
+    question = question.strip()
+    if not question:
+        raise ValueError("Question cannot be empty.")
+
+    if retrieval is None:
+        retrieval = retrieve_context(question, top_k=top_k)
+
+    context = retrieval["context"]
+    sources = retrieval["sources"]
+    retrieved_documents = retrieval["retrieved_documents"]
+
+    if not context.strip():
         return {
             "answer": (
                 "I could not find relevant information in "
@@ -61,44 +134,24 @@ def generate_answer(
             "retrieved_documents": 0,
         }
 
-    context = format_context(documents)
-
-    feedback_section = (
-        f"Evaluator Feedback:\n{feedback}"
-        if feedback
-        else "This is the first attempt. No previous feedback."
+    logger.info(
+        "Generating answer (retry=%s, docs=%s)",
+        bool(feedback),
+        retrieved_documents,
     )
 
-    messages = [
-        SystemMessage(content=GENERATOR_SYSTEM_PROMPT),
-        HumanMessage(
-            content=f"""
-                User Question:
-                {question}
-
-                Retrieved Knowledge:
-                {context}
-
-                {feedback_section}
-
-                Generate an accurate answer using the retrieved knowledge.
-                If feedback is provided, improve the previous answer accordingly.
-                """
-                    ),
-                ]
-
-    response = llm.invoke(messages)
-
-    sources = list(
-        dict.fromkeys(
-            document.metadata.get("source", "Unknown")
-            for document in documents
-        )
+    answer = generator_chain.invoke(
+        {
+            "question": question,
+            "context": context,
+            "previous_answer": previous_answer or "None. This is the first attempt.",
+            "feedback": feedback or "None. This is the first attempt.",
+        }
     )
 
     return {
-        "answer": response.content,
+        "answer": answer,
         "sources": sources,
         "context": context,
-        "retrieved_documents": len(documents),
+        "retrieved_documents": retrieved_documents,
     }
