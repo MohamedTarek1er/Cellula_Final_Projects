@@ -1,12 +1,16 @@
+import logging
+import uuid
 from pathlib import Path
+
 import streamlit as st
+
+from agents.feedback_loop import run_feedback_loop, clear_session_memory
+from knowledge_base.audio_loader import load_wav
 from knowledge_base.document_loader import load_document
 from knowledge_base.ingestion import ingest_documents
 from knowledge_base.url_loader import load_url
-from knowledge_base.wikipedia_loader import load_wikipedia
-from knowledge_base.audio_loader import load_wav
 from knowledge_base.vector_store import search_documents
-from agents.feedback_loop import run_feedback_loop
+from knowledge_base.wikipedia_loader import load_wikipedia
 
 # Create a folder for uploaded files.
 UPLOAD_DIR = Path("data/uploads")
@@ -23,9 +27,24 @@ st.set_page_config(
     layout="wide"
 )
 
-st.title("📚 AI Knowledge Assistant")
-st.write("Upload knowledge, store it in Chroma, and ask questions.")
+logging.basicConfig(level=logging.INFO)
 
+# Streamlit re-runs this script on every click; session_state survives that.
+if "session_id" not in st.session_state:
+    st.session_state.session_id = str(uuid.uuid4())
+if "chat" not in st.session_state:
+    st.session_state.chat = []
+
+st.title("📚 AI Knowledge Assistant")
+st.write(
+    "Upload knowledge, store it in Chroma, and ask questions. "
+    "Answers are checked by an Evaluator before they are returned."
+)
+
+
+# --------------------------------------------------
+# Helpers
+# --------------------------------------------------
 
 def save_uploaded_file(uploaded_file):
     """Save an uploaded file locally and return its path."""
@@ -40,8 +59,59 @@ def ingest_and_report(documents):
     st.success(f"Knowledge stored successfully. Chunks stored: {chunk_count}")
 
 
+STATUS_BANNERS = {
+    "accepted": (st.success, "✅ The evaluator accepted this answer."),
+    "max_iterations": (st.warning, "⚠️ Not validated: maximum attempts reached."),
+    "no_knowledge": (st.info, "ℹ️ No relevant information was found in the knowledge base."),
+    "evaluation_failed": (st.warning, "⚠️ Not validated: the evaluator had a technical problem."),
+    "error": (st.error, "❌ A technical error occurred."),
+}
+
+
+def render_result(result: dict):
+    """Show the answer, status banner, sources and evaluator feedback."""
+    st.write("### Answer")
+    st.write(result.get("answer", "No answer was generated."))
+
+    banner, default_text = STATUS_BANNERS.get(
+        result.get("status"), (st.warning, "Unknown status.")
+    )
+    banner(result.get("disclaimer") or default_text)
+
+    st.write("Iterations:", result.get("iterations", 0))
+
+    sources = result.get("sources", [])
+    if sources:
+        st.write("### Sources")
+        for source in sources:
+            st.write(f"- {source}")
+
+    history = result.get("history", [])
+    if history:
+        with st.expander("Evaluator feedback and attempts"):
+            for item in history:
+                st.markdown(f"**Attempt {item['attempt']}: {item['decision']}**")
+                st.write(f"Evaluator feedback: {item.get('feedback') or '(none)'}")
+                st.caption(item["answer"])
+                st.divider()
+
+
 # --------------------------------------------------
-# 1. Upload local files
+# Sidebar: conversation memory controls
+# --------------------------------------------------
+
+with st.sidebar:
+    st.subheader("Conversation")
+    st.caption(f"Session: {st.session_state.session_id[:8]}")
+
+    if st.button("🗑️ Clear conversation memory"):
+        clear_session_memory(st.session_state.session_id)
+        st.session_state.chat = []
+        st.success("Generator and Evaluator memory cleared.")
+
+
+# --------------------------------------------------
+# Tabs
 # --------------------------------------------------
 
 file_tab, url_tab, wiki_tab, audio_tab, question_tab = st.tabs([
@@ -51,6 +121,11 @@ file_tab, url_tab, wiki_tab, audio_tab, question_tab = st.tabs([
     "🎙️ WAV Audio",
     "💬 Ask Questions"
 ])
+
+
+# --------------------------------------------------
+# 1. Upload local files
+# --------------------------------------------------
 
 with file_tab:
     st.subheader("Upload Knowledge Files")
@@ -201,32 +276,24 @@ with question_tab:
                     st.info("No documents were retrieved.")
 
                 with st.spinner("Generating and evaluating answer..."):
-                    result = run_feedback_loop(question.strip())
+                    result = run_feedback_loop(
+                        question.strip(),
+                        session_id=st.session_state.session_id,
+                    )
 
-                st.write("### Answer")
-                st.write(result.get("answer", "No answer was generated."))
-
-                decision = result.get("decision", "unknown")
-                if decision == "accept":
-                    st.success("The evaluator accepted the answer.")
-                else:
-                    st.warning("The answer was not accepted by the evaluator.")
-
-                st.write("Iterations:", result.get("iterations", 0))
-
-                sources = result.get("sources", [])
-                if sources:
-                    st.write("### Sources")
-                    for source in sources:
-                        st.write(f"- {source}")
-
-                history = result.get("history", [])
-                if history:
-                    with st.expander("Evaluation History"):
-                        for item in history:
-                            st.write(f"Attempt: {item.get('attempt')}")
-                            st.write(f"Decision: {item.get('decision')}")
-                            st.write(f"Feedback: {item.get('feedback', '')}")
+                st.session_state.chat.append(
+                    {"question": question.strip(), "result": result}
+                )
+                render_result(result)
 
             except Exception as error:
                 st.error(f"Question answering failed: {error}")
+
+    # Earlier questions of this conversation (outside the button block,
+    # so it is still visible after Streamlit re-runs).
+    if len(st.session_state.chat) > 1:
+        with st.expander("Previous questions in this conversation"):
+            for turn in reversed(st.session_state.chat[:-1]):
+                st.markdown(f"**You:** {turn['question']}")
+                st.write(turn["result"].get("answer", ""))
+                st.divider()

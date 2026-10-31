@@ -6,6 +6,6 @@ load_dotenv()
 
 llm = ChatOpenAI(
     api_key=os.getenv("OPENAI_API_KEY"),
-    base_url="https://openrouter.ai/api/v1",
-    model=os.getenv("OPENROUTER_MODEL"),
+    base_url=os.getenv("BASE_URL"),
+    model=os.getenv("MODEL"),
 )

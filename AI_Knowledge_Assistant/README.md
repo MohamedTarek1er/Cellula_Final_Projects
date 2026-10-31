@@ -1,151 +1,237 @@
-# AI Knowledge Assistant
+# 🤖 AI Knowledge Assistant
 
-## 1. Project Overview
+An intelligent, multi-source **Retrieval-Augmented Generation (RAG)** assistant with an **autonomous Generator-Evaluator feedback loop**. The application ingests documents, web pages, Wikipedia articles, and audio files, stores semantic embeddings in ChromaDB, and verifies every generated answer against ground-truth context before presenting it to the user.
 
-The **AI Knowledge Assistant** is an AI-powered application that allows users to add information from different sources and ask questions about it.
+---
 
-The assistant searches its knowledge base for relevant information and uses an LLM to generate an answer based on the retrieved content.
+## 📸 Application
 
 The project uses **RAG (Retrieval-Augmented Generation)** to improve answers by providing the model with relevant information from the knowledge base.
 
-## 2. How Does It Work?
+### 💬 1. Interactive Q&A Interface & Verified Answers
+_Ask questions based on your ingested knowledge base. The assistant displays the verified response, confidence banners, and citations._
 
-The system follows these steps:
+![Ask Questions Tab](./assets/screenshots/chat_interface.png)
 
-1. **Add Knowledge:** The user uploads a document, enters a webpage URL, provides a Wikipedia topic, or uploads a WAV audio file.
-2. **Extract Text:** The appropriate loader extracts text from the selected source.
-3. **Split Documents:** The extracted text is divided into smaller chunks.
-4. **Store Knowledge:** The chunks are converted into embeddings and stored in Chroma.
-5. **Retrieve Information:** When the user asks a question, the system searches for relevant chunks.
-6. **Generate an Answer:** The LLM uses the question and retrieved information to generate an answer.
-7. **Evaluate the Answer:** Another LLM call checks whether the answer is supported by the retrieved context.
-8. **Improve the Answer:** If the evaluator rejects the answer, its feedback is sent to the generator for another attempt, up to four attempts.
 
-## 3. Project Modules
+---
 
-| File / Module                        | Responsibility                                                                             |
-| ------------------------------------ | ------------------------------------------------------------------------------------------ |
-| `main.py`                            | Provides the Streamlit interface for testing the application.                              |
-| `llm.py`                             | Connects the application to an LLM through OpenRouter.                                     |
-| `knowledge_base/document_loader.py`  | Loads supported local documents, including PDF, TXT, Markdown, code files, DOCX, and PPTX. |
-| `knowledge_base/url_loader.py`       | Extracts content from webpage URLs.                                                        |
-| `knowledge_base/wikipedia_loader.py` | Retrieves information from Wikipedia.                                                      |
-| `knowledge_base/audio_loader.py`     | Converts WAV audio into text using Faster Whisper.                                         |
-| `knowledge_base/text_splitter.py`    | Splits documents into smaller chunks.                                                      |
-| `knowledge_base/ingestion.py`        | Coordinates document splitting and storage.                                                |
-| `knowledge_base/vector_store.py`     | Stores and retrieves document chunks using Chroma.                                         |
-| `agents/generator.py`                | Generates answers using the user's question and retrieved context.                         |
-| `agents/evaluator.py`                | Evaluates generated answers and returns a decision and feedback.                           |
-| `agents/feedback_loop.py`            | Repeats generation and evaluation when an answer is rejected, up to four attempts.         |
-| `requirements.txt`                   | Contains the Python dependencies required by the project.                                  |
+### 📥 2. Multi-Source Knowledge Ingestion
+_Upload local documents (PDF, DOCX, PPTX, Code, TXT), scrape websites, fetch Wikipedia topics, or transcribe WAV audio recordings._
 
-## 4. Technologies Used
 
-- **Python:** Main programming language.
-- **Streamlit:** User interface.
-- **LangChain:** Integration with language models and document loaders.
-- **OpenRouter:** Access to the selected LLM.
-- **ChromaDB:** Vector database for storing and searching knowledge.
-- **Sentence Transformers:** Generates text embeddings.
-- **Faster Whisper:** Transcribes WAV audio.
-- **Redis:** Planned caching feature; integration still needs to be verified.
+
+---
+
+### 🔄 3. Generator & Evaluator Feedback Loop in Action
+_Inspect the evaluation breakdown, validation status, and iterative attempt revisions when an answer requires refinement._
 
 ## 5. How to Run the Project
 
-### Step 1: Create a virtual environment
+---
 
-On Windows:
+## ✨ Key Features
 
-```bash
-python -m venv .venv
-.venv\Scripts\activate
+- **Multi-Format Document Ingestion:**
+  - Local files: PDF (`pypdf`), Word (`docx2txt`), PowerPoint (`unstructured`), Markdown, Plain Text, CSV, JSON, and source code files (`.py`, `.js`, `.html`, `.css`).
+  - Web scraping: Ingest full webpage contents via URL (`WebBaseLoader`).
+  - Wikipedia search: Search and retrieve articles on any topic (`WikipediaLoader`).
+  - Audio transcription: Transcribe spoken audio (`.wav`) locally using **Faster-Whisper** (`base` model on CPU with `int8` quantization).
+- **Vector Search with ChromaDB:**
+  - Chunks text with recursive character splitting (`chunk_size=1000`, `chunk_overlap=200`).
+  - Computes dense embeddings locally using `sentence-transformers/all-MiniLM-L6-v2` via `langchain-huggingface`.
+  - Persists vectors to `./chroma_db` with MD5 content deduplication.
+- **Autonomous Generator-Evaluator Feedback Loop:**
+  - **Generator Agent:** Synthesizes direct, grounded answers from retrieved context.
+  - **Evaluator Agent:** Cross-checks generated answers against strict criteria using retrieved documents as the sole source of truth.
+  - **Iterative Refinement:** If an answer contains unsupported claims, inaccuracies, or omissions, actionable feedback is fed back to the Generator for up to **4 attempts**.
+- **Dual-Isolated Conversation Memory:**
+  - **Generator Memory:** Tracks user queries, past attempts, and feedback received to enable conversational continuity.
+  - **Evaluator Memory:** Privately tracks evaluation history and decisions without polluting the generator context.
+  - Per-session memory management with a one-click reset in the UI.
+- **Modern Streamlit Dashboard:**
+  - Dedicated tabs for file uploads, URLs, Wikipedia, audio transcription, and chat.
+  - Real-time status badges (`Accepted`, `Not Validated`, `No Knowledge Found`, `Error`).
+  - Expandable panels for retrieved source documents, evaluator attempt history, and previous questions.
+
+---
+
+## 🏗️ System Architecture
+
+```mermaid
+flowchart TD
+    subgraph Ingestion ["1. Knowledge Ingestion"]
+        A["Documents (PDF, DOCX, PPTX, Code)"] --> D["Text Splitter"]
+        B["Web URLs & Wikipedia"] --> D
+        C["WAV Audio (Faster-Whisper)"] --> D
+        D --> E["Embedding (all-MiniLM-L6-v2)"]
+        E --> F[("ChromaDB Vector Store")]
+    end
+
+    subgraph QueryLoop ["2. Agentic Retrieval & Feedback Loop"]
+        User(["User Question"]) --> Retrieve["Vector Retrieval (top-k)"]
+        F -.-> Retrieve
+        Retrieve --> Gen["Generator Agent<br/>(Drafts Answer)"]
+        
+        Gen --> Eval{"Evaluator Agent<br/>(Validates Claims)"}
+        Eval -- "Rejected (Max 4 attempts)" --> Feedback["Feedback + Prior Attempts"]
+        Feedback --> Gen
+        Eval -- "Accepted / Max Attempts" --> Result["Streamlit UI Display<br/>(Answer + Sources + Status)"]
+    end
 ```
 
-### Step 2: Install dependencies
+---
+
+## 📋 Evaluator Criteria
+
+The Evaluator Agent verifies responses against 7 quality benchmarks:
+
+| Criterion | Rule |
+| :--- | :--- |
+| **1. Accuracy** | Facts in the answer must precisely align with the retrieved documents. |
+| **2. Relevance** | Directly addresses the specific question asked by the user. |
+| **3. Completeness** | Covers all critical details and aspects supported by the context. |
+| **4. Consistency** | Contains no internal contradictions or conflicting statements. |
+| **5. Grounding** | Every claim can be directly traced to specific retrieved chunks. |
+| **6. No Unsupported Claims** | Zero hallucinations; does not pull facts from pre-trained external knowledge. |
+| **7. Clarity & Quality** | Concise, professional, and well-structured output. |
+
+> **Honest Fallback:** If the retrieved context does not contain the answer, the assistant is instructed to state that the information is unavailable rather than speculating.
+
+---
+
+## 📁 Project Structure
+
+```text
+AI_Knowledge_Assistant/
+├── agents/
+│   ├── evaluator.py            # Evaluator agent logic, prompt, and JSON output parser
+│   ├── feedback_loop.py        # Coordinates Generator-Evaluator iterative loop
+│   └── generator.py            # Generator agent logic and context formatting
+├── assets/
+│   └── screenshots/            # Directory for application screenshots
+├── chroma_db/                  # Persistent Chroma vector store directory
+├── data/
+│   └── uploads/                # Temporary storage for uploaded documents
+├── knowledge_base/
+│   ├── audio_loader.py         # WAV audio loader using Faster-Whisper
+│   ├── document_loader.py      # Multi-format document loader (PDF, DOCX, PPTX, TXT, Code)
+│   ├── ingestion.py            # Pipeline for splitting and storing chunks
+│   ├── text_splitter.py        # RecursiveCharacterTextSplitter configuration
+│   ├── url_loader.py           # Web page scraper using WebBaseLoader
+│   ├── vector_store.py         # Chroma initialization, embedding setup, and similarity search
+│   └── wikipedia_loader.py     # Wikipedia search and article ingestion
+├── memory/
+│   ├── evaluator_memory.py     # Isolated memory tracking Evaluator judgments
+│   └── generator_memory.py     # Isolated memory tracking conversation and attempts
+├── .env                        # Environment variables (API keys and model configs)
+├── .gitignore                  # Git ignore rules
+├── llm.py                      # Centralized LLM client initialization (ChatOpenAI)
+├── main.py                     # Streamlit frontend user interface
+├── README.md                   # Project documentation
+└── requirements.txt            # Python dependencies
+```
+
+---
+
+## 🚀 Getting Started
+
+### Prerequisites
+
+- **Python 3.10+** (Tested on Python 3.11 & 3.13)
+- An active OpenAI or OpenAI-compatible API key (OpenAI, OpenRouter, LocalAI, vLLM, etc.)
+
+---
+
+### Step 1: Clone the Repository
+
+```bash
+git clone <repository_url>
+cd Cellula_Final_Projects/AI_Knowledge_Assistant
+```
+
+---
+
+### Step 2: Create and Activate a Virtual Environment
+
+**Windows (PowerShell):**
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+```
+
+**macOS / Linux:**
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+---
+
+### Step 3: Install Dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### Step 3: Configure environment variables
+> **Included Packages:** `streamlit`, `langchain-core`, `langchain-community`, `langchain-openai`, `langchain-chroma`, `langchain-huggingface`, `chromadb`, `sentence-transformers`, `faster-whisper`, `pypdf`, `docx2txt`, `unstructured[pptx]`, `beautifulsoup4`, `wikipedia`, `python-dotenv`, `redis`.
 
-Create a `.env` file in the project root:
+---
+
+### Step 4: Configure Environment Variables
+
+Create a `.env` file in the `AI_Knowledge_Assistant` directory:
 
 ```env
-OPENAI_API_KEY=your_openrouter_api_key
-OPENROUTER_MODEL=your_model_id
+OPENAI_API_KEY=your_api_key_here
+BASE_URL=https://api.openai.com/v1
+MODEL=gpt-4.1-mini-2025-04-14
 ```
 
-Replace the example values with your actual OpenRouter API key and a model ID available to your account.
+*For OpenRouter users:*
+```env
+OPENAI_API_KEY=your_openrouter_api_key
+BASE_URL=https://openrouter.ai/api/v1
+MODEL=openai/gpt-4o-mini
+```
 
-### Step 4: Run the application
+---
+
+### Step 5: Run the Application
+
+Launch the Streamlit web application:
 
 ```bash
 streamlit run main.py
 ```
 
-Open the local URL displayed in the terminal.
+Streamlit will print the local server URL (typically `http://localhost:8501`). Open it in your web browser.
 
-## 6. Current Implementation Status
+---
 
-The following modules are present in the current implementation described by the project code:
+## 💡 How to Use the App
 
-- OpenRouter LLM configuration.
-- Loading documents from supported file formats.
-- Loading webpage and Wikipedia content.
-- Transcribing WAV audio.
-- Splitting documents into chunks.
-- Storing and retrieving information using Chroma.
-- Generating answers from retrieved context.
-- Evaluating generated answers.
-- Retrying rejected answers using evaluator feedback.
-- A Streamlit interface for testing these features together.
+1. **Ingest Knowledge:**
+   - Go to **Upload Files**, **Load URL**, **Wikipedia**, or **Upload Audio**.
+   - Select or upload your source and click the corresponding **Ingest** button.
+   - The status box will confirm how many chunks were parsed and stored in the vector store.
+2. **Ask Questions:**
+   - Switch to the **💬 Ask Questions** tab.
+   - Type your question and click **Ask Question**.
+3. **Review Evaluation & Sources:**
+   - View the generated answer and status banner (`Accepted`, `Not Validated`, etc.).
+   - Expand **Sources** to view the underlying documents used.
+   - Expand **Evaluator feedback and attempts** to inspect the Evaluator's critique across any revision cycles.
+4. **Manage Memory:**
+   - Use the **🗑️ Clear conversation memory** button in the sidebar anytime to start a fresh topic session.
 
-**Note:** The presence of a module does not guarantee that every feature works correctly. Run and test the application to verify the complete workflow.
+---
 
-## 7. Remaining Work
+## 🛣️ Roadmap & Future Enhancements
 
-### Task 1: Implement Redis Caching
-
-Redis is included in the dependencies, but the caching workflow still needs to be implemented or verified.
-
-- [ ] Set up and connect to a Redis server.
-- [ ] Decide which results should be cached.
-- [ ] Add cache lookup and storage to the appropriate workflow.
-- [ ] Configure expiration times.
-- [ ] Test cache hits, cache misses, and Redis connection failures.
-- [ ] Consider how changes to the knowledge base affect cached answers.
-
-### Task 2: Implement or Verify Conversation Memory
-
-- [ ] Decide what information the assistant should remember between messages.
-- [ ] Store and retrieve conversation history using appropriate conversation IDs.
-- [ ] Decide whether different agents require separate memory.
-- [ ] Keep conversation history separate from verified knowledge-base sources.
-- [ ] Add a way to clear conversation history if needed.
-
-### Task 3: Improve the Streamlit Interface
-
-- [ ] Display clear loading and error messages.
-- [ ] Make retrieved documents and their sources easy to inspect.
-- [ ] Show evaluator feedback when an answer is rejected.
-- [ ] Provide a way to add missing or corrected knowledge if required.
-- [ ] Test large files and repeated uploads.
-- [ ] Improve the interface based on user testing.
-
-## 8. Important Notes for the Team
-
-- **Understand the existing code before changing it.** Avoid rewriting modules that already work.
-- **Work on one task at a time.** Test each change before combining it with other work.
-- **Keep function names and parameters consistent.** If a function changes, update the modules that call it.
-- **Test both known and unknown questions.** The assistant should not confidently invent information that is missing from the knowledge base.
-- **Do not assume Redis caching or conversation memory is complete** until it has been connected to the application and tested.
-- **Avoid duplicate work.** Coordinate with teammates before implementing a feature another person may already be working on.
-
-## 9. Project Summary
-
-The main goal is to build a knowledge assistant that can ingest information from different sources, retrieve relevant content, generate answers, and evaluate those answers before returning them to the user.
-
-The main next steps are to **test the existing modules, complete or verify Redis caching, complete or verify conversation memory, improve the interface, and prepare the project for deployment**.
-
-Update this README as tasks are completed so that it always reflects the actual state of the project.
+- [x] **Core RAG Pipeline:** Document, URL, Wikipedia, and Audio ingestion.
+- [x] **Agentic Feedback Loop:** Self-correcting Generator & Evaluator architecture.
+- [x] **Dual Memory Isolation:** Distinct memory for Generator and Evaluator.
+- [ ] **Redis Semantic Caching:** Cache frequently asked questions and vector embeddings for sub-second retrieval.
+- [ ] **Hybrid Search:** Combine Chroma dense vector retrieval with BM25 sparse keyword retrieval.
+- [ ] **Streaming Responses:** Stream intermediate generator tokens to the UI before evaluation.

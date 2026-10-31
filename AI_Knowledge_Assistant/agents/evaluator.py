@@ -1,4 +1,4 @@
-import logging
+﻿import logging
 
 from langchain_core.exceptions import OutputParserException
 from langchain_core.output_parsers import JsonOutputParser
@@ -101,7 +101,7 @@ def evaluate_answer(question: str, answer: str, context: str, feedback_history: 
     """
     try:
         result = evaluator_chain.invoke(
-            {"question": question, "context": context, "answer": answer, "feedback_history": feedback_history or "None. This is the first evaluation of this question."}
+            {"question": question, "context": context, "answer": answer, "feedback": feedback_history or "None. This is the first evaluation of this question."}
         )
     except OutputParserException:
         logger.warning("Evaluator returned invalid JSON after retry.")
